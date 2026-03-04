@@ -1,0 +1,108 @@
+# azure-devops-pipelines/deployment/multi-server-dotnet-update.yml
+# Multi-stage deployment pipeline for .NET runtime updates
+# Includes pre-flight validation, approval gates, and per-environment isolation
+
+trigger: none  # Manual trigger only for deployments
+
+parameters:
+  - name: environment
+    displayName: 'Target Environment'
+    type: string
+    default: 'DEV'
+    values:
+      - DEV
+      - STAGING
+      - PRODUCTION
+  - name: installerPath
+    displayName: 'Installer UNC Path'
+    type: string
+    default: '\\fileserver\packages\dotnet-hosting-8.0.11-win.exe'
+  - name: whatIf
+    displayName: 'WhatIf Mode (preview only)'
+    type: boolean
+    default: true
+
+variables:
+  - group: 'deployment-variables'
+  - name: serverListPath
+    ${{ if eq(parameters.environment, 'DEV') }}:
+      value: '$(Build.SourcesDirectory)/config/servers-dev.txt'
+    ${{ if eq(parameters.environment, 'STAGING') }}:
+      value: '$(Build.SourcesDirectory)/config/servers-staging.txt'
+    ${{ if eq(parameters.environment, 'PRODUCTION') }}:
+      value: '$(Build.SourcesDirectory)/config/servers-prod.txt'
+
+stages:
+  - stage: PreFlight
+    displayName: 'Pre-Flight Validation'
+    jobs:
+      - job: ValidateTargets
+        displayName: 'Validate Target Servers'
+        pool:
+          name: 'Self-Hosted-Windows'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Run Pre-Flight Checks'
+            inputs:
+              targetType: filePath
+              filePath: '$(Build.SourcesDirectory)/deployment/Invoke-MultiServerDotNetUpdate.ps1'
+              arguments: >
+                -ServerList "$(serverListPath)"
+                -InstallerPath "${{ parameters.installerPath }}"
+                -OutputPath "$(Build.ArtifactStagingDirectory)"
+                -WhatIf
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'PreFlightReport'
+
+  - stage: Deploy
+    displayName: 'Deploy to ${{ parameters.environment }}'
+    dependsOn: PreFlight
+    condition: and(succeeded(), eq('${{ parameters.whatIf }}', false))
+    jobs:
+      - deployment: DeployDotNet
+        displayName: 'Deploy .NET Update'
+        pool:
+          name: 'Self-Hosted-Windows'
+        environment: '${{ parameters.environment }}-servers'  # Requires approval for STAGING/PROD
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: PowerShell@2
+                  displayName: 'Execute Deployment'
+                  inputs:
+                    targetType: filePath
+                    filePath: '$(Build.SourcesDirectory)/deployment/Invoke-MultiServerDotNetUpdate.ps1'
+                    arguments: >
+                      -ServerList "$(serverListPath)"
+                      -InstallerPath "${{ parameters.installerPath }}"
+                      -OutputPath "$(Build.ArtifactStagingDirectory)"
+                - task: PublishBuildArtifacts@1
+                  inputs:
+                    pathToPublish: '$(Build.ArtifactStagingDirectory)'
+                    artifactName: 'DeploymentLog'
+                  condition: always()
+
+  - stage: PostDeploy
+    displayName: 'Post-Deployment Validation'
+    dependsOn: Deploy
+    condition: succeeded()
+    jobs:
+      - job: VerifyInstallation
+        pool:
+          name: 'Self-Hosted-Windows'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Verify .NET Versions'
+            inputs:
+              targetType: filePath
+              filePath: '$(Build.SourcesDirectory)/security/Invoke-DotNetVulnerabilityAudit.ps1'
+              arguments: >
+                -ServerList "$(serverListPath)"
+                -OutputPath "$(Build.ArtifactStagingDirectory)"
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'PostDeployVerification'

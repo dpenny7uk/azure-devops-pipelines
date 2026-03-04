@@ -1,0 +1,76 @@
+# Tableau Server Cleanup Pipeline
+# Runs TSM maintenance (ziplogs + cleanup), file retention, secondary server cleanup
+# Monitors disk space before/after with threshold alerting
+
+trigger: none
+
+schedules:
+  - cron: '0 1 * * *'          # 01:00 UTC daily (runs before backup)
+    displayName: 'Daily Tableau Cleanup'
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: environment
+    displayName: 'Target Environment'
+    type: string
+    default: 'production'
+    values:
+      - staging
+      - production
+  - name: whatIf
+    displayName: 'WhatIf Mode (preview only)'
+    type: boolean
+    default: false
+
+variables:
+  - group: 'tableau-${{ parameters.environment }}'
+  - group: 'email-config'
+
+pool:
+  name: 'Self-Hosted Windows'
+  demands:
+    - Agent.ComputerName -equals $(TableauPrimaryServer)
+
+stages:
+  - stage: Cleanup
+    displayName: 'Tableau Cleanup - ${{ parameters.environment }}'
+    jobs:
+      - job: RunCleanup
+        displayName: 'Execute Cleanup'
+        timeoutInMinutes: 60
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: PowerShell@2
+            displayName: 'Run Tableau Cleanup'
+            inputs:
+              filePath: '$(Build.SourcesDirectory)/scripts/Invoke-TableauCleanup.ps1'
+              arguments: >-
+                -ServerName "$(TableauPrimaryServer)"
+                -SecondaryServerName "$(TableauSecondaryServer)"
+                -LogPath "$(LogPath)"
+                -ZipLogPath "$(ZipLogPath)"
+                -TableauZipLogPath "$(TableauZipLogPath)"
+                -LogRetentionDays $(LogRetentionDays)
+                -ZipLogRetentionDays $(ZipLogRetentionDays)
+                -EmailTo "$(EmailTo)"
+                -EmailFrom "$(EmailFrom)"
+                -SmtpServer "$(SmtpServer)"
+                ${{ if eq(parameters.whatIf, true) }}:
+                  -WhatIf
+              errorActionPreference: 'stop'
+            env:
+              TableauPrimaryServer: $(TableauPrimaryServer)
+              TableauSecondaryServer: $(TableauSecondaryServer)
+              Environment: ${{ parameters.environment }}
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Logs'
+            condition: always()
+            inputs:
+              targetPath: '$(LogPath)'
+              artifact: 'cleanup-logs-$(Build.BuildId)'

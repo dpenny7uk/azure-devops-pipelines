@@ -1,0 +1,63 @@
+# Tableau Dashboard PDF Export Pipeline
+# Monthly export of parameterised dashboards to PDF for business distribution
+# Exports one PDF per partner using tabcmd with URL parameter filtering
+
+trigger: none
+
+schedules:
+  - cron: '0 6 5 * *'          # 5th of each month at 06:00 UTC
+    displayName: 'Monthly Dashboard Export'
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: dryRun
+    displayName: 'Dry Run (preview only)'
+    type: boolean
+    default: false
+
+variables:
+  - group: 'tableau-production'
+  - group: 'email-config'
+
+pool:
+  name: 'Self-Hosted Windows'
+  demands:
+    - Agent.ComputerName -equals $(TableauPrimaryServer)
+
+stages:
+  - stage: Export
+    displayName: 'Dashboard PDF Export'
+    jobs:
+      - job: ExportPDFs
+        displayName: 'Export Partner Reports'
+        timeoutInMinutes: 120
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: PowerShell@2
+            displayName: 'Export Dashboards to PDF'
+            inputs:
+              filePath: '$(Build.SourcesDirectory)/scripts/Export-TableauDashboardPDF.ps1'
+              arguments: >-
+                -TableauPassword "$(TableauServiceAccountPassword)"
+                ${{ if eq(parameters.dryRun, true) }}:
+                  -DryRun
+              errorActionPreference: 'stop'
+
+          - task: PowerShell@2
+            displayName: 'Send Completion Notification'
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                $status = if ($env:AGENT_JOBSTATUS -eq 'Succeeded') { 'Success' } else { 'Failed' }
+                $subject = "Monthly Dashboard Export - $status"
+                $body = "Dashboard PDF export pipeline completed with status: $status`nBuild: $(Build.BuildNumber)"
+                
+                Send-MailMessage -From "$(EmailFrom)" -To "$(EmailTo)" `
+                  -Subject $subject -Body $body `
+                  -SmtpServer "$(SmtpServer)"

@@ -1,0 +1,45 @@
+# azure-devops-pipelines/compliance/atlassian-license-audit.yml
+# Monthly pipeline to audit Atlassian (Confluence/JIRA) user licenses against AD groups
+# Generates HTML report with cost savings estimates
+
+trigger: none
+
+schedules:
+  - cron: '0 8 1 * *'    # First day of each month at 08:00 UTC
+    displayName: 'Monthly Atlassian License Audit'
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  name: 'Self-Hosted-Windows'  # Requires AD module and Atlassian API access
+
+variables:
+  - group: 'atlassian-audit-variables'   # API token, SMTP settings
+  - name: maxInactiveDays
+    value: 90
+  - name: minOrgDays
+    value: 60
+
+steps:
+  - task: PowerShell@2
+    displayName: 'Run Atlassian License Audit'
+    inputs:
+      targetType: filePath
+      filePath: '$(Build.SourcesDirectory)/license-management/Compare-AtlassianUsersToAD.ps1'
+      arguments: >
+        -MaxInactiveDays $(maxInactiveDays)
+        -MinOrgDays $(minOrgDays)
+        -OutputPath "$(Build.ArtifactStagingDirectory)"
+        -SendReport
+        -WhatIf
+    env:
+      ATLASSIAN_API_TOKEN: $(AtlassianApiToken)
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Audit Report'
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)'
+      artifactName: 'AtlassianAuditReport'
+    condition: always()

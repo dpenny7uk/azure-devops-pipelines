@@ -1,0 +1,44 @@
+# azure-devops-pipelines/monitoring/ssl-certificate-monitor.yml
+# Scheduled pipeline to check SSL certificate expiry across endpoints
+# Runs daily and sends email alerts for certificates expiring within 30 days
+
+trigger: none
+
+schedules:
+  - cron: '0 7 * * *'    # Run daily at 07:00 UTC
+    displayName: 'Daily SSL Certificate Check'
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  name: 'Self-Hosted-Windows'  # Requires Windows agent with WinRM access
+
+variables:
+  - group: 'monitoring-variables'    # Contains SMTP settings, email recipients
+  - name: thresholdDays
+    value: 30
+  - name: criticalDays
+    value: 7
+
+steps:
+  - task: PowerShell@2
+    displayName: 'Run SSL Certificate Expiry Check'
+    inputs:
+      targetType: filePath
+      filePath: '$(Build.SourcesDirectory)/monitoring/Get-SSLCertificateExpiry.ps1'
+      arguments: >
+        -ThresholdDays $(thresholdDays)
+        -CriticalDays $(criticalDays)
+        -OutputPath "$(Build.ArtifactStagingDirectory)"
+        -SendEmail
+    env:
+      SMTP_SERVER: $(SmtpServer)
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish SSL Report'
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)'
+      artifactName: 'SSLCertificateReport'
+    condition: always()
