@@ -40,7 +40,7 @@ variables:
 pool:
   name: 'Self-Hosted Windows'
   demands:
-    - Agent.ComputerName -equals $(TableauPrimaryServer)
+    - Agent.ComputerName -equals pr0602-53001-00.hiscox.com
 
 stages:
   - stage: Export
