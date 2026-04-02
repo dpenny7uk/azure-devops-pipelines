@@ -55,9 +55,7 @@ stages:
               arguments: >-
                 -TableauPassword "$(TableauServiceAccountPassword)"
                 -ExportCount ${{ parameters.exportCount }}
-                ${{ if eq(parameters.dryRun, true) }}
-                -DryRun
-                ${{ endif }}
+                ${{ if eq(parameters.dryRun, true) }}-DryRun${{ endif }}
               errorActionPreference: 'stop'
 
           - publish: $(ExportPath)
