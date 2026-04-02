@@ -1,6 +1,11 @@
-# Tableau Dashboard PDF Export Pipeline
+# Tableau FloodCover Dashboard PDF Export Pipeline
 # Monthly export of parameterised dashboards to PDF for business distribution
 # Exports one PDF per partner using tabcmd with URL parameter filtering
+#
+# Variable group precedence (last wins):
+#   gp-gappsupp-tableau-production  -> Server names, paths, credentials
+#   gp-gappsupp-shared-config       -> SmtpServer, EmailFrom, EmailTo (ops default)
+#   tableau-floodcover-export-notifications -> Overrides EmailTo for export team recipients
 
 trigger: none
 
@@ -17,10 +22,15 @@ parameters:
     displayName: 'Dry Run (preview only)'
     type: boolean
     default: false
+  - name: exportCount
+    displayName: 'Number of partners to export (0 = all)'
+    type: number
+    default: 0
 
 variables:
-  - group: 'tableau-production'
-  - group: 'email-config'
+  - group: 'gp-gappsupp-tableau-production'
+  - group: 'gp-gappsupp-shared-config'
+  - group: 'tableau-floodcover-export-notifications'
 
 pool:
   name: 'Self-Hosted Windows'
@@ -41,10 +51,13 @@ stages:
           - task: PowerShell@2
             displayName: 'Export Dashboards to PDF'
             inputs:
-              filePath: '$(Build.SourcesDirectory)/scripts/Export-TableauDashboardPDF.ps1'
+              filePath: '$(Build.SourcesDirectory)/tableau/floodcover-automation/Export-TableauFloodCover.ps1'
               arguments: >-
                 -TableauPassword "$(TableauServiceAccountPassword)"
-                ${{ if eq(parameters.dryRun, true) }}-DryRun${{ endif }}
+                -ExportCount ${{ parameters.exportCount }}
+                ${{ if eq(parameters.dryRun, true) }}
+                -DryRun
+                ${{ endif }}
               errorActionPreference: 'stop'
 
           - publish: $(ExportPath)
