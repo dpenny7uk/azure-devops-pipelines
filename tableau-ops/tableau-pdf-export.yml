@@ -31,6 +31,11 @@ variables:
   - group: 'gp-gappsupp-tableau-production'
   - group: 'gp-gappsupp-shared-config'
   - group: 'tableau-floodcover-export-notifications'
+  - name: dryRunFlag
+    ${{ if eq(parameters.dryRun, true) }}:
+      value: '-DryRun'
+    ${{ else }}:
+      value: ''
 
 pool:
   name: 'Self-Hosted Windows'
@@ -55,7 +60,7 @@ stages:
               arguments: >-
                 -TableauPassword "$(TableauServiceAccountPassword)"
                 -ExportCount ${{ parameters.exportCount }}
-                ${{ if eq(parameters.dryRun, true) }}-DryRun${{ endif }}
+                $(dryRunFlag)
               errorActionPreference: 'stop'
 
           - publish: $(ExportPath)
