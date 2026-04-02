@@ -44,20 +44,117 @@ stages:
               filePath: '$(Build.SourcesDirectory)/scripts/Export-TableauDashboardPDF.ps1'
               arguments: >-
                 -TableauPassword "$(TableauServiceAccountPassword)"
-                ${{ if eq(parameters.dryRun, true) }}:
-                  -DryRun
+                ${{ if eq(parameters.dryRun, true) }}-DryRun${{ endif }}
               errorActionPreference: 'stop'
+
+          - publish: $(ExportPath)
+            displayName: 'Publish PDFs as Artifact'
+            artifact: 'PartnerReports-$(Build.BuildNumber)'
+            condition: and(succeeded(), ne('${{ parameters.dryRun }}', 'true'))
+
+          - task: PowerShell@2
+            displayName: 'Copy to Network Share'
+            condition: and(succeeded(), ne('${{ parameters.dryRun }}', 'true'))
+            inputs:
+              targetType: 'inline'
+              errorActionPreference: 'stop'
+              script: |
+                $sharePath = "$(NetworkSharePath)"
+                $shareUser = "$(NetworkShareUser)"
+                $sharePassword = "$(NetworkSharePassword)"
+
+                try {
+                    # Authenticate to remote share (avoids Kerberos double-hop)
+                    Write-Host "Authenticating to network share..."
+                    net use "$sharePath" /user:"$shareUser" "$sharePassword" /persistent:no 2>&1
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to authenticate to network share: exit code $LASTEXITCODE"
+                    }
+                    Write-Host "Authenticated to $sharePath"
+
+                    $source = "$(ExportPath)"
+                    $destination = Join-Path $sharePath (Split-Path $source -Leaf)
+
+                    Write-Host "Copying from $source to $destination..."
+                    robocopy "$source" "$destination" *.pdf /R:3 /W:5 /NP /NFL /NDL
+                    # Robocopy exit codes: 0 = no change, 1 = files copied, 2 = extra files, 3 = both
+                    if ($LASTEXITCODE -ge 8) {
+                        throw "Robocopy failed with exit code $LASTEXITCODE"
+                    }
+                    Write-Host "##vso[task.setvariable variable=CopySuccess]true"
+                    Write-Host "Files copied successfully"
+                } finally {
+                    # Clean up network share connection
+                    net use "$sharePath" /delete /yes 2>&1 | Out-Null
+                }
+
+          - task: PowerShell@2
+            displayName: 'Verify Exports'
+            condition: and(succeeded(), ne('${{ parameters.dryRun }}', 'true'))
+            inputs:
+              targetType: 'inline'
+              errorActionPreference: 'stop'
+              script: |
+                $source = "$(ExportPath)"
+                $localFiles = Get-ChildItem -Path $source -Filter *.pdf
+                Write-Host "Local PDFs: $($localFiles.Count)"
+
+                $sharePath = "$(NetworkSharePath)"
+                $destination = Join-Path $sharePath (Split-Path $source -Leaf)
+
+                # Re-authenticate for verification
+                net use "$sharePath" /user:"$(NetworkShareUser)" "$(NetworkSharePassword)" /persistent:no 2>&1 | Out-Null
+                try {
+                    $remoteFiles = Get-ChildItem -Path $destination -Filter *.pdf
+                    Write-Host "Remote PDFs: $($remoteFiles.Count)"
+
+                    if ($remoteFiles.Count -ne $localFiles.Count) {
+                        Write-Host "##vso[task.logissue type=warning]File count mismatch: $($localFiles.Count) local vs $($remoteFiles.Count) remote"
+                    }
+
+                    foreach ($file in $localFiles) {
+                        $remote = $remoteFiles | Where-Object { $_.Name -eq $file.Name }
+                        if (-not $remote) {
+                            Write-Host "##vso[task.logissue type=error]Missing on share: $($file.Name)"
+                        } elseif ($remote.Length -ne $file.Length) {
+                            Write-Host "##vso[task.logissue type=warning]Size mismatch: $($file.Name) (local: $($file.Length) vs remote: $($remote.Length))"
+                        }
+                    }
+                    Write-Host "Verification complete"
+                } finally {
+                    net use "$sharePath" /delete /yes 2>&1 | Out-Null
+                }
 
           - task: PowerShell@2
             displayName: 'Send Completion Notification'
             condition: always()
             inputs:
               targetType: 'inline'
+              errorActionPreference: 'continue'
               script: |
                 $status = if ($env:AGENT_JOBSTATUS -eq 'Succeeded') { 'Success' } else { 'Failed' }
                 $subject = "Monthly Dashboard Export - $status"
-                $body = "Dashboard PDF export pipeline completed with status: $status`nBuild: $(Build.BuildNumber)"
-                
-                Send-MailMessage -From "$(EmailFrom)" -To "$(EmailTo)" `
-                  -Subject $subject -Body $body `
-                  -SmtpServer "$(SmtpServer)"
+                $body = @"
+                Dashboard PDF export pipeline completed with status: $status
+                Build: $(Build.BuildNumber)
+                Exported: $(ExportSuccess) succeeded, $(ExportFailed) failed
+                Copy to share: $(if ($env:COPYSUCCESS -eq 'true') { 'Success' } else { 'Not completed' })
+                "@
+
+                $smtpServer = "$(SmtpServer)"
+                $smtpPort = 25
+                $from = "$(EmailFrom)"
+                $to = "$(EmailTo)"
+
+                try {
+                    $smtp = New-Object System.Net.Mail.SmtpClient($smtpServer, $smtpPort)
+                    $smtp.EnableSsl = $true
+                    $mail = New-Object System.Net.Mail.MailMessage($from, $to, $subject, $body)
+                    $smtp.Send($mail)
+                    Write-Host "Notification sent to: $to"
+                } catch {
+                    Write-Host "##vso[task.logissue type=warning]Email notification failed: $_"
+                } finally {
+                    if ($mail) { $mail.Dispose() }
+                    if ($smtp) { $smtp.Dispose() }
+                }
