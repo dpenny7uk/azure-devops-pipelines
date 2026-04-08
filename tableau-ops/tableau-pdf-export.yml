@@ -59,6 +59,7 @@ stages:
               filePath: '$(Build.SourcesDirectory)/tableau/floodcover-automation/Export-TableauFloodCover.ps1'
               arguments: >-
                 -TableauPassword "$(TableauServiceAccountPassword)"
+                -TableauServerHost "$(TableauServer)"
                 -ExportCount ${{ parameters.exportCount }}
                 $(dryRunFlag)
               errorActionPreference: 'stop'
